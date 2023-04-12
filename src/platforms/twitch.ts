@@ -2,7 +2,7 @@ import dayjs from 'dayjs';
 import { Express } from 'express';
 import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
-import { Platform } from '../interfaces/platform';
+import { Platform, PlatformEvents } from '../interfaces/platform';
 import { Database } from '../services/db';
 
 enum DatabaseKeys {
@@ -28,13 +28,15 @@ export class Twitch implements Platform {
   name: string;
   description: string;
   TOKEN_NAMES = [Tokens.SECRET, Tokens.CLIENT_ID];
+  events = new EventEmitter() as PlatformEvents;
   private secret = '';
   private client_id = '';
   private user_access_token = '';
-  private events = new EventEmitter();
+  private twitchEvents = new EventEmitter();
   private user_access_refresh_token = '';
-  private socket_session_id?: string;
+  private socket_session_id = '';
   private db?: Database;
+  private socket?: WebSocket;
 
   constructor() {
     this.name = 'Twitch';
@@ -47,7 +49,7 @@ export class Twitch implements Platform {
         return res.sendStatus(401);
       }
 
-      this.events.emit(Events.USER_ACCESS_CODE, req.query.code);
+      this.twitchEvents.emit(Events.USER_ACCESS_CODE, req.query.code);
 
       res.send('You have been authorized, you can close this tab');
     });
@@ -55,6 +57,8 @@ export class Twitch implements Platform {
 
   private async deleteAllSubscriptions() {
     const subscriptions = await this.getSubscriptions();
+
+    console.log('subs', subscriptions);
 
     return Promise.all(
       subscriptions.map((subscription) => {
@@ -75,11 +79,25 @@ export class Twitch implements Platform {
     endpoint.searchParams.append('grant_type', 'refresh_token');
     endpoint.searchParams.append('refresh_token', refreshToken);
 
-    fetch(endpoint, {
+    return fetch(endpoint, {
       method: 'POST',
     })
       .then((r) => r.json())
-      .then((r) => console.log('refresh', r));
+      .then((response) => {
+        this.user_access_token = response.access_token;
+        this.user_access_refresh_token = response.refresh_token;
+
+        const refreshDiff = dayjs(response.expires_in).diff(dayjs(), 'seconds');
+
+        this.createRefreshTimeout(refreshDiff);
+
+        this.db?.set((data) => ({
+          ...data,
+          [DatabaseKeys.USER_ACCESS_REFRESH_TOKEN]: this.user_access_refresh_token,
+          [DatabaseKeys.USER_ACCESS_TOKEN]: this.user_access_token,
+          [DatabaseKeys.USER_ACCESS_TOKEN_EXPIRE]: response.expires_in,
+        }));
+      });
   }
 
   private async parseAndManageTokens() {
@@ -95,6 +113,7 @@ export class Twitch implements Platform {
       console.log('refreshing');
       await this.refreshToken(refresh_token);
     } else {
+      console.log('setting token', access_token);
       this.user_access_refresh_token = refresh_token;
       this.user_access_token = access_token;
 
@@ -113,11 +132,12 @@ export class Twitch implements Platform {
     await this.parseAndManageTokens();
     await this.deleteAllSubscriptions();
 
+    console.log(this.user_access_token);
+
     if (!this.user_access_token) {
       await this.oauthClient();
     }
 
-    await this.websocket();
     // await this.getSubscriptions().then(console.log);
   }
 
@@ -142,13 +162,19 @@ export class Twitch implements Platform {
 
     endpoint.searchParams.append('id', id);
 
+    console.log('is about to delete', id);
+
     return fetch(endpoint, {
       method: 'DELETE',
       headers: {
         'Client-Id': this.client_id,
         Authorization: `Bearer ${this.user_access_token}`,
       },
-    });
+    })
+      .then((r) => {
+        return r.text();
+      })
+      .then((r) => console.log('deleted', r));
   }
 
   private async getSubscriptions() {
@@ -162,19 +188,33 @@ export class Twitch implements Platform {
       },
     })
       .then((r) => r.json())
-      .then((response) => response.data as any[]);
+      .then((response) => (response.data ?? []) as any[]);
   }
 
-  private async subscribe(username: string, event: string, session_id: string) {
+  private userHasSubscription(subscriptions: any[], userId: string, event: string) {
+    return subscriptions.some((subscription) => {
+      return subscription.type === event && subscription.condition.broadcaster_user_id === userId;
+    });
+  }
+
+  private async subscribe(username: string, event: string) {
     const userId = await this.getUserId(username);
     const subscriptions = await this.getSubscriptions();
     const endpoint = new URL('https://api.twitch.tv/helix/eventsub/subscriptions');
 
-    if (subscriptions.some((subscription: any) => subscription.type === event)) {
-      return console.log(event, 'subscription already exists, ignoring');
+    if (!this.socket_session_id) {
+      console.log('no socket, starting');
+      await this.websocket();
+      console.log('socket is done');
     }
 
-    fetch(endpoint, {
+    if (this.userHasSubscription(subscriptions, userId, event)) {
+      console.log(event, 'subscription already exists, ignoring');
+
+      return false;
+    }
+
+    await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -185,9 +225,20 @@ export class Twitch implements Platform {
         type: 'stream.online',
         version: '1',
         condition: { broadcaster_user_id: userId },
-        transport: { method: 'websocket', session_id },
+        transport: { method: 'websocket', session_id: this.socket_session_id },
       }),
-    });
+    })
+      .then((r) => {
+        console.log(r.status);
+        return r.text();
+      })
+      .then((r) => console.log('sub', r));
+
+    return true;
+  }
+
+  public addStreamer(name: string) {
+    this.subscribe(name, 'stream.online');
   }
 
   private oauthClient() {
@@ -203,7 +254,7 @@ export class Twitch implements Platform {
     console.log('navigate to:', endpoint.toString());
 
     return new Promise<void>((resolve) =>
-      this.events.once(Events.USER_ACCESS_CODE, (code: string) => {
+      this.twitchEvents.once(Events.USER_ACCESS_CODE, (code: string) => {
         const endpoint = new URL('https://id.twitch.tv/oauth2/token');
 
         endpoint.searchParams.append('client_id', this.client_id);
@@ -218,11 +269,12 @@ export class Twitch implements Platform {
             this.user_access_token = response.access_token;
             this.user_access_refresh_token = response.refresh_token;
 
-            this.db?.set({
+            this.db?.set((data) => ({
+              ...data,
               [DatabaseKeys.USER_ACCESS_TOKEN]: this.user_access_token,
               [DatabaseKeys.USER_ACCESS_REFRESH_TOKEN]: this.user_access_refresh_token,
               [DatabaseKeys.USER_ACCESS_TOKEN_EXPIRE]: dayjs().add(response.expires_in, 'seconds').toISOString(),
-            });
+            }));
 
             resolve();
           });
@@ -230,49 +282,67 @@ export class Twitch implements Platform {
     );
   }
 
-  private websocket(reconnectAttempts = 0) {
-    if (reconnectAttempts >= 5) {
-      console.log('Reached max reconnect attempts, exiting');
-      process.exitCode = 1;
+  private websocket() {
+    return new Promise<void>((resolve) => {
+      const socket = new WebSocket('wss://eventsub-beta.wss.twitch.tv/ws');
 
-      return;
-    }
+      socket.on('message', (message) => {
+        const data = JSON.parse(message.toString());
+        const event = data.metadata.message_type;
+        const type = data.metadata.subscription_type;
 
-    const socket = new WebSocket('wss://eventsub-beta.wss.twitch.tv/ws');
+        if (event === 'session_keepalive') return;
 
-    socket.on('message', (message) => {
-      const data = JSON.parse(message.toString());
-      const event = data.metadata.message_type;
+        if (event === 'session_welcome') {
+          this.socket_session_id = data.payload.session.id;
 
-      if (event === 'session_keepalive') return;
+          resolve();
+        }
 
-      if (event === 'session_welcome') {
-        this.socket_session_id = data.payload.session.id;
+        if (type === 'stream.online') {
+          this.events.emit('online', data.payload.event.broadcaster_user_name);
+        }
 
-        this.subscribe('TappT', 'stream.online', data.payload.session.id);
-      }
+        console.log('socket message', data);
+      });
 
-      console.log('socket message', data);
-    });
+      socket.once('close', async () => {
+        if (this.socket_session_id) {
+          const subscriptions = await this.getSubscriptions();
 
-    socket.once('close', async () => {
-      console.log('socket closed');
-      if (this.socket_session_id) {
-        const subscriptions = await this.getSubscriptions();
+          subscriptions.forEach((subscription) => {
+            if (subscription.transport.session_id === this.socket_session_id) {
+              console.log('found dead subscription');
+              this.deleteSubscription(subscription.id);
+            }
+          });
 
-        subscriptions.forEach((subscription) => {
-          if (subscription.transport.session_id === this.socket_session_id) {
-            console.log('found dead subscription');
-            this.deleteSubscription(subscription.id);
-          }
-        });
-      }
+          this.socket_session_id = '';
+        }
+      });
 
-      this.websocket(reconnectAttempts + 1);
+      this.socket = socket;
     });
   }
 
-  commands() {
-    return [];
+  addStreamerAlert(name: string) {
+    console.log('adding alert');
+    return this.subscribe(name, 'stream.online');
+  }
+
+  removeStreamerAlert(name: string) {
+    return true;
+  }
+
+  isStreamerSubscribed(name: string) {
+    return true;
+  }
+
+  formatURL(username: string) {
+    return `https://www.twitch.tv/${username}`;
+  }
+
+  close() {
+    this.socket?.close();
   }
 }
