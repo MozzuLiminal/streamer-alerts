@@ -3,6 +3,7 @@ import { Express } from 'express';
 import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 import { Platform, PlatformEvents } from '../interfaces/platform';
+import { Subscription } from '../interfaces/twitch';
 import db from '../services/db';
 
 enum DatabaseKeys {
@@ -36,6 +37,7 @@ export class Twitch implements Platform {
   private user_access_refresh_token = '';
   private socket_session_id = '';
   private socket?: WebSocket;
+  private idToUsername: Record<string, string> = {};
 
   constructor() {
     this.name = 'Twitch';
@@ -55,7 +57,7 @@ export class Twitch implements Platform {
   }
 
   private async deleteAllSubscriptions() {
-    const subscriptions = await this.getSubscriptions();
+    const subscriptions = await this.getTwitchSubscriptions();
 
     console.log('subs', subscriptions);
 
@@ -174,7 +176,7 @@ export class Twitch implements Platform {
       .then((r) => console.log('deleted', r));
   }
 
-  private async getSubscriptions() {
+  private async getTwitchSubscriptions(): Promise<Subscription[]> {
     const endpoint = new URL('https://api.twitch.tv/helix/eventsub/subscriptions');
 
     return fetch(endpoint, {
@@ -185,7 +187,7 @@ export class Twitch implements Platform {
       },
     })
       .then((r) => r.json())
-      .then((response) => (response.data ?? []) as any[]);
+      .then((response) => response.data ?? []);
   }
 
   private userHasSubscription(subscriptions: any[], userId: string, event: string) {
@@ -196,8 +198,10 @@ export class Twitch implements Platform {
 
   private async subscribe(username: string, event: string) {
     const userId = await this.getUserId(username);
-    const subscriptions = await this.getSubscriptions();
+    const subscriptions = await this.getTwitchSubscriptions();
     const endpoint = new URL('https://api.twitch.tv/helix/eventsub/subscriptions');
+
+    this.idToUsername[userId] = username;
 
     if (!this.socket_session_id) {
       console.log('no socket, starting');
@@ -305,7 +309,7 @@ export class Twitch implements Platform {
 
       socket.once('close', async () => {
         if (this.socket_session_id) {
-          const subscriptions = await this.getSubscriptions();
+          const subscriptions = await this.getTwitchSubscriptions();
 
           subscriptions.forEach((subscription) => {
             if (subscription.transport.session_id === this.socket_session_id) {
@@ -322,17 +326,33 @@ export class Twitch implements Platform {
     });
   }
 
+  async getSubscriptions() {
+    const subscriptions = await this.getTwitchSubscriptions();
+
+    return subscriptions
+      .map((subscription) => this.idToUsername[subscription.condition.broadcaster_user_id])
+      .filter(Boolean);
+  }
+
   addStreamerAlert(name: string) {
     console.log('adding alert');
     return this.subscribe(name, 'stream.online');
   }
 
-  removeStreamerAlert(name: string) {
+  async removeStreamerAlert(name: string) {
+    const subscriptions = await this.getTwitchSubscriptions();
+
+    const match = subscriptions.find((subscription) => {
+      return this.idToUsername[subscription.condition.broadcaster_user_id] === name;
+    });
+
+    if (match) await this.deleteSubscription(match.id);
+
     return true;
   }
 
-  isStreamerSubscribed(name: string) {
-    return true;
+  async isStreamerSubscribed(name: string) {
+    return (await this.getSubscriptions()).includes(name);
   }
 
   formatURL(username: string) {

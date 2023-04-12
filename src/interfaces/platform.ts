@@ -13,8 +13,9 @@ export interface Platform {
   registerWebhooks: (express: Express) => void;
   init: (tokens: Record<string, string | undefined>) => Promise<void>;
   addStreamerAlert: (name: string) => Promise<boolean>;
-  removeStreamerAlert: (name: string) => boolean;
-  isStreamerSubscribed: (name: string) => boolean;
+  removeStreamerAlert: (name: string) => Promise<boolean>;
+  isStreamerSubscribed: (name: string) => Promise<boolean>;
   formatURL: (username: string) => string;
   close: () => void;
+  getSubscriptions: () => Promise<string[]>;
 }

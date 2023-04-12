@@ -14,12 +14,17 @@ export class Manager {
     this.discord = discord;
     this.webhooks = webhooks;
 
-    this.discord.events.on('remove', (platformName, name, cb) => {
+    this.discord.events.on('remove', async (platformName, name, cb) => {
       if (platformName === 'all') {
-        return cb(this.platforms.every((platform) => this.handleRemoveStreamer(platform.name, name)));
+        const allPlatforms = await Promise.all(
+          this.platforms.map((platform) => this.handleRemoveStreamer(platform.name, name)),
+        );
+        const unqiuePlatforms = Array.from(new Set(...allPlatforms.flat(2)));
+
+        return cb(unqiuePlatforms);
       }
 
-      return cb(this.handleRemoveStreamer(platformName, name));
+      return this.handleRemoveStreamer(platformName, name).then(cb);
     });
 
     this.discord.events.on('add', (platformName, name, cb) => {
@@ -30,15 +35,44 @@ export class Manager {
 
       return platform.addStreamerAlert(name).then(cb);
     });
+
+    this.discord.events.on('users', async (callback) => {
+      const usersInPlatforms = await Promise.all(
+        this.platforms.map(async (platform) => [platform.name, await platform.getSubscriptions()] as const),
+      );
+
+      const platformsOfuser = usersInPlatforms.reduce((acc, [platform, users]) => {
+        return users.reduce<Record<string, string[]>>((userObject, user) => {
+          if (!Array.isArray(userObject[user])) {
+            return { ...userObject, [user]: [platform] };
+          }
+
+          userObject[user].push(platform);
+
+          return userObject;
+        }, acc);
+      }, {});
+
+      callback(platformsOfuser);
+    });
   }
 
-  private handleRemoveStreamer(platformName: string, name: string) {
+  private async handleRemoveStreamer(platformName: string, name: string) {
+    if (platformName === 'all') {
+      const platforms = this.platforms.filter((platform) => platform.isStreamerSubscribed(name));
+
+      await Promise.all(platforms.map((platform) => platform.removeStreamerAlert(name)));
+
+      return this.platforms.map((platform) => platform.name);
+    }
+
     const platform = this.platforms.find((platform) => platform.name === platformName);
 
-    if (!platform) return false;
-    if (!platform.isStreamerSubscribed(name)) return true;
+    if (!platform || !platform.isStreamerSubscribed(name)) return Promise.resolve([]);
 
-    return platform.removeStreamerAlert(name);
+    await platform.removeStreamerAlert(name);
+
+    return [platform.name];
   }
 
   private async processNextQueue(override = false): Promise<any> {
@@ -63,6 +97,8 @@ export class Manager {
     }, {});
 
     console.log('init');
+
+    console.log(platform.getSubscriptions().then(console.log));
 
     await platform.init(tokens);
     await platform.registerWebhooks(this.webhooks);

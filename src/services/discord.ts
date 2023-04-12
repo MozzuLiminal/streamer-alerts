@@ -16,12 +16,20 @@ import TypedEventEmitter from 'typed-emitter';
 enum Commands {
   ALERT = 'alert',
   REMOVE = 'remove',
+  DEBUG = 'debug',
+}
+
+interface Command {
+  name: Commands;
+  command: Omit<SlashCommandBuilder, 'addSubcommand' | 'addSubcommandGroup'>;
+  action: (interaction: ChatInputCommandInteraction<CacheType>) => any;
 }
 
 export type DiscordEvents = TypedEventEmitter<{
-  online(name: string, platform: string, url: string): void;
-  remove(platformName: string, user: string, callback: (result: boolean) => void): void;
-  add(platformName: string, user: string, callback: (result: boolean) => void): void;
+  online: (name: string, platform: string, url: string) => void;
+  remove: (platformName: string, user: string, callback: (removedFrom: string[]) => void) => void;
+  add: (platformName: string, user: string, callback: (result: boolean) => void) => void;
+  users: (callback: (usersInPlatforms: Record<string, string[]>) => void) => void;
 }>;
 
 export class Discord {
@@ -32,6 +40,7 @@ export class Discord {
   private GUILD_ID = '';
   private channel?: TextChannel;
   private platforms: string[] = [];
+  private commands?: Command[];
   events = new EventEmitter() as DiscordEvents;
 
   constructor() {
@@ -58,54 +67,11 @@ export class Discord {
 
       console.log('got interaction', interaction.commandName);
 
-      if (interaction.commandName === Commands.ALERT) {
-        return void this.handleAddAlertPlatformStreamer(interaction);
-      }
-
-      if (interaction.commandName === Commands.REMOVE) {
-        return void this.handleRemoveAlertPlatformStreamer(interaction);
-      }
+      this.commands?.find(({ name }) => interaction.commandName === name)?.action(interaction);
     });
 
     this.events.on('online', (name, platform, url) => {
       this.channel?.send(`${name} is streaming live on ${platform} at ${url}`);
-    });
-  }
-
-  private async handleAddAlertPlatformStreamer(interaction: ChatInputCommandInteraction<CacheType>) {
-    const [platform, streamer] = [
-      interaction.options.get('platform')?.value as string,
-      interaction.options.get('streamer')?.value as string,
-    ];
-
-    if (!platform || !streamer) {
-      return interaction.reply({ content: 'platform or streamer is missing', ephemeral: true });
-    }
-
-    console.log('calling add');
-
-    this.events.emit('add', platform, streamer, (success) => {
-      interaction.reply({
-        content: `Added alerts for ${streamer} on ${platform} ${success ? 'successfully' : 'unsuccessfully'}`,
-        ephemeral: true,
-      });
-    });
-  }
-
-  private async handleRemoveAlertPlatformStreamer(interaction: ChatInputCommandInteraction<CacheType>) {
-    const [platform, streamer] = [
-      interaction.options.get('platform')?.value as string,
-      interaction.options.get('streamer')?.value as string,
-    ];
-
-    if (!platform || !streamer) {
-      return interaction.reply({ content: 'platform or streamer is missing', ephemeral: true });
-    }
-
-    this.events.emit('remove', platform, streamer, (success) => {
-      const platformNames = this.platforms.join(', ');
-
-      return interaction.reply({ content: `${streamer} has been removed from ${platformNames}`, ephemeral: true });
     });
   }
 
@@ -130,53 +96,116 @@ export class Discord {
    * Registers the slash commands to the discord server. Should be called after adding platform instances
    */
   async registerSlashCommands() {
-    const commands = [
-      new SlashCommandBuilder()
-        .setName(Commands.ALERT)
-        .setDescription('Adds an alert for a streamer on a platform')
-        .addStringOption((option) =>
-          option
-            .setName('platform')
-            .setDescription('The streaming platform')
-            .setRequired(true)
-            .addChoices(
-              ...this.platforms.map<APIApplicationCommandOptionChoice<string>>((platform) => ({
-                name: platform,
-                value: platform,
-              })),
-            ),
-        )
-        .addStringOption((option) =>
-          option.setName('streamer').setDescription('the streamer that you want to add alerts for').setRequired(true),
-        ),
-      new SlashCommandBuilder()
-        .setName(Commands.REMOVE)
-        .setDescription('Removes an alert for a streamer')
-        .addStringOption((option) =>
-          option
-            .setName('platform')
-            .setDescription('The streaming platform')
-            .setRequired(true)
-            .addChoices(
-              ...this.platforms.map<APIApplicationCommandOptionChoice<string>>((platform) => ({
-                name: platform,
-                value: platform,
-              })),
-              {
-                name: 'all',
-                value: 'all',
-              },
-            ),
-        )
-        .addStringOption((option) =>
-          option.setName('streamer').setDescription('the streamer that you want to add alerts for').setRequired(true),
-        ),
+    this.commands = [
+      {
+        name: Commands.ALERT,
+        command: new SlashCommandBuilder()
+          .setName(Commands.ALERT)
+          .setDescription('Adds an alert for a streamer on a platform')
+          .addStringOption((option) =>
+            option
+              .setName('platform')
+              .setDescription('The streaming platform')
+              .setRequired(true)
+              .addChoices(
+                ...this.platforms.map<APIApplicationCommandOptionChoice<string>>((platform) => ({
+                  name: platform,
+                  value: platform,
+                })),
+              ),
+          )
+          .addStringOption((option) =>
+            option.setName('streamer').setDescription('the streamer that you want to add alerts for').setRequired(true),
+          ),
+        action: (interaction) => {
+          const [platform, streamer] = [
+            interaction.options.get('platform')?.value as string,
+            interaction.options.get('streamer')?.value as string,
+          ];
+
+          if (!platform || !streamer) {
+            return interaction.reply({ content: 'platform or streamer is missing', ephemeral: true });
+          }
+
+          console.log('calling add');
+
+          this.events.emit('add', platform, streamer, (success) => {
+            interaction.reply({
+              content: `Added alerts for ${streamer} on ${platform} ${success ? 'successfully' : 'unsuccessfully'}`,
+              ephemeral: true,
+            });
+          });
+        },
+      },
+      {
+        name: Commands.REMOVE,
+        command: new SlashCommandBuilder()
+          .setName(Commands.REMOVE)
+          .setDescription('Removes an alert for a streamer')
+          .addStringOption((option) =>
+            option
+              .setName('platform')
+              .setDescription('The streaming platform')
+              .setRequired(true)
+              .addChoices(
+                ...this.platforms.map<APIApplicationCommandOptionChoice<string>>((platform) => ({
+                  name: platform,
+                  value: platform,
+                })),
+                {
+                  name: 'all',
+                  value: 'all',
+                },
+              ),
+          )
+          .addStringOption((option) =>
+            option.setName('streamer').setDescription('the streamer that you want to add alerts for').setRequired(true),
+          ),
+        action: (interaction) => {
+          const [platform, streamer] = [
+            interaction.options.get('platform')?.value as string,
+            interaction.options.get('streamer')?.value as string,
+          ];
+
+          if (!platform || !streamer) {
+            return interaction.reply({ content: 'platform or streamer is missing', ephemeral: true });
+          }
+
+          this.events.emit('remove', platform, streamer, (success) => {
+            const platformNames = this.platforms.join(', ');
+
+            return interaction.reply({
+              content: `${streamer} has been removed from ${platformNames}`,
+              ephemeral: true,
+            });
+          });
+        },
+      },
+      {
+        name: Commands.DEBUG,
+        command: new SlashCommandBuilder()
+          .setName(Commands.DEBUG)
+          .setDescription('Sends debug information to the sender'),
+        action: (interaction) => {
+          this.events.emit('users', (data) => {
+            const lines = Object.keys(data)
+              .map((user) => `${user}: ${data[user].join(', ')}`)
+              .join('\n');
+
+            let message = `The following users are in the following platform alerts:\n${lines}`;
+
+            if (lines.length <= 0) message = 'There are no alerts currently';
+
+            interaction.reply({ content: message, ephemeral: true });
+          });
+        },
+      },
     ];
 
     console.log('registering');
 
     await this.rest.put(Routes.applicationGuildCommands(this.DISCORD_APP_ID, this.GUILD_ID), {
-      body: commands.map((command) => command.toJSON()),
+      body: this.commands.map(({ command }) => command.toJSON()),
     });
 
     return this.attachEvents();
