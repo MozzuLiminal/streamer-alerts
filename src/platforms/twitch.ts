@@ -3,7 +3,7 @@ import { Express } from 'express';
 import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 import { Platform, PlatformEvents } from '../interfaces/platform';
-import { Database } from '../services/db';
+import db from '../services/db';
 
 enum DatabaseKeys {
   USER_ACCESS_TOKEN = 'USER_ACCESS_TOKEN',
@@ -35,7 +35,6 @@ export class Twitch implements Platform {
   private twitchEvents = new EventEmitter();
   private user_access_refresh_token = '';
   private socket_session_id = '';
-  private db?: Database;
   private socket?: WebSocket;
 
   constructor() {
@@ -91,7 +90,7 @@ export class Twitch implements Platform {
 
         this.createRefreshTimeout(refreshDiff);
 
-        this.db?.set((data) => ({
+        db.set((data) => ({
           ...data,
           [DatabaseKeys.USER_ACCESS_REFRESH_TOKEN]: this.user_access_refresh_token,
           [DatabaseKeys.USER_ACCESS_TOKEN]: this.user_access_token,
@@ -101,7 +100,7 @@ export class Twitch implements Platform {
   }
 
   private async parseAndManageTokens() {
-    const database = (await this.db?.get()) ?? {};
+    const database = (await db?.get()) ?? {};
 
     const refresh_token = database[DatabaseKeys.USER_ACCESS_REFRESH_TOKEN];
     const access_token = database[DatabaseKeys.USER_ACCESS_TOKEN];
@@ -121,13 +120,11 @@ export class Twitch implements Platform {
     }
   }
 
-  async init(tokens: Record<string, string | undefined>, db: Database) {
+  async init(tokens: Record<string, string | undefined>) {
     if (!tokens[Tokens.CLIENT_ID] || !tokens[Tokens.SECRET]) return console.log('missing tokens');
 
     this.client_id = tokens[Tokens.CLIENT_ID];
     this.secret = tokens[Tokens.SECRET];
-
-    this.db = db;
 
     await this.parseAndManageTokens();
     await this.deleteAllSubscriptions();
@@ -269,7 +266,7 @@ export class Twitch implements Platform {
             this.user_access_token = response.access_token;
             this.user_access_refresh_token = response.refresh_token;
 
-            this.db?.set((data) => ({
+            db.set((data) => ({
               ...data,
               [DatabaseKeys.USER_ACCESS_TOKEN]: this.user_access_token,
               [DatabaseKeys.USER_ACCESS_REFRESH_TOKEN]: this.user_access_refresh_token,

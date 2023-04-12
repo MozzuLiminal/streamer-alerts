@@ -1,6 +1,5 @@
 import { Express } from 'express';
 import { Platform } from '../interfaces/platform';
-import db from './db';
 import { Discord } from './discord';
 
 export class Manager {
@@ -65,7 +64,7 @@ export class Manager {
 
     console.log('init');
 
-    await platform.init(tokens, db);
+    await platform.init(tokens);
     await platform.registerWebhooks(this.webhooks);
 
     console.log('after init');
