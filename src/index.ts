@@ -1,25 +1,22 @@
 import dotenv from 'dotenv';
 import express from 'express';
 import { Twitch } from './platforms/twitch';
-import db from './services/db';
-
-const app = express();
-
+import { Discord } from './services/discord';
+import { Manager } from './services/manager';
 dotenv.config();
 
-const twitch = new Twitch();
+const main = async () => {
+  const app = express();
+  const discord = new Discord();
+  const manager = new Manager(discord, app);
 
-const tokens = twitch.TOKEN_NAMES.reduce<Record<string, string | undefined>>((acc, token) => {
-  return { ...acc, [token]: process.env[token] };
-}, {});
+  manager.addPlatform(new Twitch());
 
-twitch.init(tokens, db).then(() => console.log('twitch has inited'));
-twitch.registerWebhooks(app);
+  app.listen(3000, () => {
+    console.log('express is listening to 3000');
+  });
+};
 
-app.get('/', (req, res) => {
-  res.send('ok');
-});
+main();
 
-app.listen(3000, () => {
-  console.log('express is listening to 3000');
-});
+// client.login(process.env.DISCORD_TOKEN);
