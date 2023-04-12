@@ -12,6 +12,9 @@ import {
 } from 'discord.js';
 import { EventEmitter } from 'events';
 import TypedEventEmitter from 'typed-emitter';
+import { createLogger } from './log';
+
+const logger = createLogger('discord');
 
 enum Commands {
   ALERT = 'alert',
@@ -65,7 +68,7 @@ export class Discord {
     this.client.on(Events.InteractionCreate, (interaction) => {
       if (!interaction.isChatInputCommand()) return;
 
-      console.log('got interaction', interaction.commandName);
+      logger.info(`user ${interaction.user.username} used the slash command /${interaction.commandName}`);
 
       this.commands?.find(({ name }) => interaction.commandName === name)?.action(interaction);
     });
@@ -84,7 +87,7 @@ export class Discord {
 
     return tokensToLoad.reduce<Tokens>((acc, token) => {
       if (!process.env[token]) {
-        console.error(`${token} is missing in the environment`);
+        logger.error(`${token} is missing in the environment`);
         process.exitCode = 1;
       }
 
@@ -126,8 +129,6 @@ export class Discord {
           if (!platform || !streamer) {
             return interaction.reply({ content: 'platform or streamer is missing', ephemeral: true });
           }
-
-          console.log('calling add');
 
           this.events.emit('add', platform, streamer, (success) => {
             interaction.reply({
@@ -202,11 +203,11 @@ export class Discord {
       },
     ];
 
-    console.log('registering');
-
     await this.rest.put(Routes.applicationGuildCommands(this.DISCORD_APP_ID, this.GUILD_ID), {
       body: this.commands.map(({ command }) => command.toJSON()),
     });
+
+    logger.info(`attached the following slashcommands ${this.commands.map((command) => command.name).join(', ')}`);
 
     return this.attachEvents();
   }

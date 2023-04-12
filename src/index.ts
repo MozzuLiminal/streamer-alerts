@@ -2,8 +2,14 @@ import dotenv from 'dotenv';
 import express from 'express';
 import { Twitch } from './platforms/twitch';
 import { Discord } from './services/discord';
+import { createLogger } from './services/log';
 import { Manager } from './services/manager';
+
+const logger = createLogger('index');
+
 dotenv.config();
+
+const PORT = process.env.PORT || 3000;
 
 const main = async () => {
   const app = express();
@@ -12,11 +18,9 @@ const main = async () => {
 
   manager.addPlatform(new Twitch());
 
-  app.listen(3000, () => {
-    console.log('express is listening to 3000');
+  app.listen(PORT, () => {
+    logger.info(`express started listening to port ${PORT}`);
   });
 };
 
 main();
-
-// client.login(process.env.DISCORD_TOKEN);

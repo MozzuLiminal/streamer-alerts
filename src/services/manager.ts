@@ -1,6 +1,9 @@
 import { Express } from 'express';
 import { Platform } from '../interfaces/platform';
 import { Discord } from './discord';
+import { createLogger } from './log';
+
+const logger = createLogger('manager');
 
 export class Manager {
   private platforms: Platform[];
@@ -78,14 +81,15 @@ export class Manager {
   private async processNextQueue(override = false): Promise<any> {
     if (!override && this.isProcessing) return;
 
+    if (!override) logger.info('started processing platforms');
+
     this.isProcessing = true;
 
     const [platform] = this.queue.splice(0, 1);
 
-    console.log('start process', platform);
-
     if (!platform) {
-      console.log('finished process');
+      logger.info('finished processing platforms');
+
       this.isProcessing = false;
       this.discord.registerSlashCommands();
 
@@ -96,14 +100,10 @@ export class Manager {
       return { ...acc, [token]: process.env[token] };
     }, {});
 
-    console.log('init');
-
-    console.log(platform.getSubscriptions().then(console.log));
-
     await platform.init(tokens);
     await platform.registerWebhooks(this.webhooks);
 
-    console.log('after init');
+    logger.info(`initialized the ${platform.name} platform`);
 
     platform.events.on('online', (name: string) => {
       this.discord.events.emit('online', name, platform.name, platform.formatURL(name));

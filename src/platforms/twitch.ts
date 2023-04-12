@@ -5,6 +5,9 @@ import WebSocket from 'ws';
 import { Platform, PlatformEvents } from '../interfaces/platform';
 import { Subscription } from '../interfaces/twitch';
 import db from '../services/db';
+import { createLogger } from '../services/log';
+
+const logger = createLogger('twitch');
 
 enum DatabaseKeys {
   USER_ACCESS_TOKEN = 'USER_ACCESS_TOKEN',
@@ -59,8 +62,6 @@ export class Twitch implements Platform {
   private async deleteAllSubscriptions() {
     const subscriptions = await this.getTwitchSubscriptions();
 
-    console.log('subs', subscriptions);
-
     return Promise.all(
       subscriptions.map((subscription) => {
         return this.deleteSubscription(subscription.id);
@@ -69,7 +70,13 @@ export class Twitch implements Platform {
   }
 
   private createRefreshTimeout = (diff: number) => {
-    setTimeout(() => this.refreshToken(this.user_access_refresh_token), diff * 1000);
+    logger.info(`refreshing token in timeout ${Math.round(diff / 60)} minutes`);
+
+    setTimeout(() => {
+      logger.info('refreshing token in timeout');
+
+      this.refreshToken(this.user_access_refresh_token);
+    }, diff * 1000);
   };
 
   private refreshToken(refreshToken: string) {
@@ -88,7 +95,7 @@ export class Twitch implements Platform {
         this.user_access_token = response.access_token;
         this.user_access_refresh_token = response.refresh_token;
 
-        const refreshDiff = dayjs(response.expires_in).diff(dayjs(), 'seconds');
+        const refreshDiff = dayjs().add(response.expires_in, 'seconds').diff(dayjs(), 'seconds');
 
         this.createRefreshTimeout(refreshDiff);
 
@@ -96,7 +103,7 @@ export class Twitch implements Platform {
           ...data,
           [DatabaseKeys.USER_ACCESS_REFRESH_TOKEN]: this.user_access_refresh_token,
           [DatabaseKeys.USER_ACCESS_TOKEN]: this.user_access_token,
-          [DatabaseKeys.USER_ACCESS_TOKEN_EXPIRE]: response.expires_in,
+          [DatabaseKeys.USER_ACCESS_TOKEN_EXPIRE]: dayjs().add(response.expires_in, 'seconds').toISOString(),
         }));
       });
   }
@@ -111,10 +118,9 @@ export class Twitch implements Platform {
     const refreshDiff = expire ? dayjs(expire).diff(dayjs(), 'seconds') : null;
 
     if (refreshDiff && refreshDiff <= 0) {
-      console.log('refreshing');
+      logger.info(`refreshing token access expire diff is ${refreshDiff}`);
       await this.refreshToken(refresh_token);
     } else {
-      console.log('setting token', access_token);
       this.user_access_refresh_token = refresh_token;
       this.user_access_token = access_token;
 
@@ -123,7 +129,9 @@ export class Twitch implements Platform {
   }
 
   async init(tokens: Record<string, string | undefined>) {
-    if (!tokens[Tokens.CLIENT_ID] || !tokens[Tokens.SECRET]) return console.log('missing tokens');
+    if (!tokens[Tokens.CLIENT_ID] || !tokens[Tokens.SECRET]) {
+      return void logger.error(`missing the ${Tokens.CLIENT_ID} or the ${Tokens.SECRET} token in the env`);
+    }
 
     this.client_id = tokens[Tokens.CLIENT_ID];
     this.secret = tokens[Tokens.SECRET];
@@ -131,13 +139,9 @@ export class Twitch implements Platform {
     await this.parseAndManageTokens();
     await this.deleteAllSubscriptions();
 
-    console.log(this.user_access_token);
-
     if (!this.user_access_token) {
       await this.oauthClient();
     }
-
-    // await this.getSubscriptions().then(console.log);
   }
 
   private getUserId(name: string) {
@@ -161,19 +165,19 @@ export class Twitch implements Platform {
 
     endpoint.searchParams.append('id', id);
 
-    console.log('is about to delete', id);
-
     return fetch(endpoint, {
       method: 'DELETE',
       headers: {
         'Client-Id': this.client_id,
         Authorization: `Bearer ${this.user_access_token}`,
       },
-    })
-      .then((r) => {
-        return r.text();
-      })
-      .then((r) => console.log('deleted', r));
+    }).then((response) => {
+      if (!response.ok) {
+        response.text().then((text) => {
+          logger.error(`delete subscription failed with response: (${response.status}) ${text}`);
+        });
+      }
+    });
   }
 
   private async getTwitchSubscriptions(): Promise<Subscription[]> {
@@ -186,7 +190,15 @@ export class Twitch implements Platform {
         Authorization: `Bearer ${this.user_access_token}`,
       },
     })
-      .then((r) => r.json())
+      .then((response) => {
+        if (!response.ok) {
+          response.text().then((text) => {
+            logger.error(`fetch subscriptions failed with response: (${response.status}) ${text}`);
+          });
+        }
+
+        return response.json();
+      })
       .then((response) => response.data ?? []);
   }
 
@@ -204,14 +216,11 @@ export class Twitch implements Platform {
     this.idToUsername[userId] = username;
 
     if (!this.socket_session_id) {
-      console.log('no socket, starting');
       await this.websocket();
-      console.log('socket is done');
     }
 
     if (this.userHasSubscription(subscriptions, userId, event)) {
-      console.log(event, 'subscription already exists, ignoring');
-
+      logger.info(`user ${username} already has subscription ${event}, ignoring...`);
       return false;
     }
 
@@ -228,12 +237,15 @@ export class Twitch implements Platform {
         condition: { broadcaster_user_id: userId },
         transport: { method: 'websocket', session_id: this.socket_session_id },
       }),
-    })
-      .then((r) => {
-        console.log(r.status);
-        return r.text();
-      })
-      .then((r) => console.log('sub', r));
+    }).then((response) => {
+      if (!response.ok) {
+        response.text().then((text) => {
+          logger.error(`create subscription failed with response: (${response.status}) ${text}`);
+        });
+      }
+    });
+
+    logger.info(`added ${event} event subscription for the user ${userId}`);
 
     return true;
   }
@@ -252,7 +264,8 @@ export class Twitch implements Platform {
     endpoint.searchParams.append('response_type', 'code');
     endpoint.searchParams.append('state', state);
 
-    console.log('navigate to:', endpoint.toString());
+    console.log('To authenticate yourself for the Twitch API, please login using the following url:');
+    console.log(endpoint.toString());
 
     return new Promise<void>((resolve) =>
       this.twitchEvents.once(Events.USER_ACCESS_CODE, (code: string) => {
@@ -265,7 +278,15 @@ export class Twitch implements Platform {
         endpoint.searchParams.append('redirect_uri', 'http://localhost:3000/twitch');
 
         fetch(endpoint, { method: 'POST' })
-          .then((r) => r.json())
+          .then((response) => {
+            if (!response.ok) {
+              response.text().then((text) => {
+                logger.error(`client OAuth failed: (${response.status}) ${text}`);
+              });
+            }
+
+            return response.json();
+          })
           .then((response) => {
             this.user_access_token = response.access_token;
             this.user_access_refresh_token = response.refresh_token;
@@ -296,24 +317,29 @@ export class Twitch implements Platform {
 
         if (event === 'session_welcome') {
           this.socket_session_id = data.payload.session.id;
+          logger.info('socket welcome message received');
 
-          resolve();
+          return resolve();
         }
+
+        logger.info(`socket received event ${type} with message type ${event}.`);
 
         if (type === 'stream.online') {
           this.events.emit('online', data.payload.event.broadcaster_user_name);
         }
-
-        console.log('socket message', data);
       });
 
       socket.once('close', async () => {
+        logger.info('socket has disconnected');
+
         if (this.socket_session_id) {
           const subscriptions = await this.getTwitchSubscriptions();
 
           subscriptions.forEach((subscription) => {
             if (subscription.transport.session_id === this.socket_session_id) {
-              console.log('found dead subscription');
+              logger.info(
+                `deleting dead or disconnected subscription with for userId ${subscription.condition.broadcaster_user_id} for the event ${subscription.type}`,
+              );
               this.deleteSubscription(subscription.id);
             }
           });
@@ -335,7 +361,6 @@ export class Twitch implements Platform {
   }
 
   addStreamerAlert(name: string) {
-    console.log('adding alert');
     return this.subscribe(name, 'stream.online');
   }
 
@@ -347,6 +372,8 @@ export class Twitch implements Platform {
     });
 
     if (match) await this.deleteSubscription(match.id);
+
+    logger.info(`removing ${match?.type} event subscription for the user ${name}`);
 
     return true;
   }
