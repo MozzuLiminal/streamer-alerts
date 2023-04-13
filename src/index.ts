@@ -9,7 +9,8 @@ const logger = createLogger('index');
 
 dotenv.config();
 
-const PORT = process.env.PORT || 3000;
+process.env.HOST = process.env.HOST || 'http://localhost';
+process.env.PORT = process.env.PORT || '3000';
 
 const main = async () => {
   const app = express();
@@ -18,8 +19,8 @@ const main = async () => {
 
   manager.addPlatform(new Twitch());
 
-  app.listen(PORT, () => {
-    logger.info(`express started listening to port ${PORT}`);
+  app.listen(process.env.PORT, () => {
+    logger.info(`express started listening to  ${process.env.HOST}:${process.env.PORT}`);
   });
 };
 

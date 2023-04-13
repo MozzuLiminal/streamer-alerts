@@ -41,6 +41,7 @@ export class Twitch implements Platform {
   private socket_session_id = '';
   private socket?: WebSocket;
   private idToUsername: Record<string, string> = {};
+  private HOST = process.env.HOST || 'http://localhost';
 
   constructor() {
     this.name = 'Twitch';
@@ -260,7 +261,7 @@ export class Twitch implements Platform {
     state = Math.random().toString(36).slice(2, 8);
 
     endpoint.searchParams.append('client_id', this.client_id);
-    endpoint.searchParams.append('redirect_uri', 'http://localhost:3000/twitch');
+    endpoint.searchParams.append('redirect_uri', this.HOST + '/twitch');
     endpoint.searchParams.append('response_type', 'code');
     endpoint.searchParams.append('state', state);
 
