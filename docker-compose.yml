@@ -1,0 +1,19 @@
+version: '3'
+
+services:
+  client:
+    image: mozzuliminal/streamer-alerts:latest
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    # container_name: streamer-alerts
+    working_dir: /app
+    ports:
+      - 3221:3221
+    entrypoint: yarn start
+    environment:
+      NODE_ENV: 'production'
+      PORT: 3221
+    volumes:
+      - ./data:/app/data:rw
+      - ./.env:/app/.env

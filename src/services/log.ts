@@ -1,3 +1,4 @@
+import path from 'path';
 import winston from 'winston';
 import { Console, File } from 'winston/lib/winston/transports';
 
@@ -7,7 +8,7 @@ const print = winston.format.printf(({ level, message, timestamp, label = '' }) 
   return `${timestamp} - ${level}:${label} ${message}`;
 });
 
-const transports = [new Console(), new File({ filename: 'logs.log' })];
+const transports = [new Console(), new File({ filename: path.join('data', 'logs.log') })];
 
 const logger = winston.createLogger({
   transports,
