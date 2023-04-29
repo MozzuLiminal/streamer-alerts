@@ -36,7 +36,7 @@ export class Manager {
       if (!platform) return cb(false);
       if (!platform.isStreamerSubscribed(name)) return cb(true);
 
-      return platform.addStreamerAlert(name).then(cb);
+      return platform.addStreamerAlert(name).then(({ result }) => result !== 'FAILED');
     });
 
     this.discord.events.on('users', async (callback) => {

@@ -219,10 +219,12 @@ export class Twitch implements Platform {
     });
   }
 
-  private async subscribe(username: string, event: string) {
+  private async subscribe(username: string, event: string): ReturnType<Platform['addStreamerAlert']> {
     const userId = await this.getUserId(username);
     const subscriptions = await this.getTwitchSubscriptions();
     const endpoint = new URL('https://api.twitch.tv/helix/eventsub/subscriptions');
+
+    const returnStatus: Awaited<ReturnType<Platform['addStreamerAlert']>> = { result: 'ADDED' };
 
     this.idToUsername[userId] = username;
 
@@ -232,7 +234,7 @@ export class Twitch implements Platform {
 
     if (this.userHasSubscription(subscriptions, userId, event)) {
       logger.info(`user ${username} already has subscription ${event}, ignoring...`);
-      return false;
+      return { result: 'EXISTS' };
     }
 
     logger.info('POST https://api.twitch.tv/helix/eventsub/subscriptions');
@@ -250,17 +252,23 @@ export class Twitch implements Platform {
         condition: { broadcaster_user_id: userId },
         transport: { method: 'websocket', session_id: this.socket_session_id },
       }),
-    }).then((response) => {
-      if (!response.ok) {
-        response.text().then((text) => {
-          logger.error(`create subscription failed with response: (${response.status}) ${text}`);
-        });
-      }
-    });
+    })
+      .then((response) => {
+        if (!response.ok) {
+          response.text().then((text) => {
+            logger.error(`create subscription failed with response: (${response.status}) ${text}`);
+          });
+
+          returnStatus.result = 'FAILED';
+        }
+      })
+      .catch(() => {
+        returnStatus.result = 'FAILED';
+      });
 
     logger.info(`added ${event} event subscription for the user ${userId}`);
 
-    return true;
+    return returnStatus;
   }
 
   public addStreamer(name: string) {

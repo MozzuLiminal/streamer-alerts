@@ -12,7 +12,7 @@ export interface Platform {
   events: PlatformEvents;
   registerWebhooks: (express: Express) => void;
   init: (tokens: Record<string, string | undefined>) => Promise<void>;
-  addStreamerAlert: (name: string) => Promise<boolean>;
+  addStreamerAlert: (name: string) => Promise<{ result: 'EXISTS' | 'ADDED' | 'FAILED' }>;
   removeStreamerAlert: (name: string) => Promise<boolean>;
   isStreamerSubscribed: (name: string) => Promise<boolean>;
   formatURL: (username: string) => string;
