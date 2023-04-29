@@ -55,7 +55,7 @@ jobs:
               fi
               cd streamer-alerts
               git fetch --all
-              git reset --hard origin/master
+              git reset --hard origin/main
               docker-compose pull
               docker-compose down
               docker-compose up -d
@@ -76,17 +76,17 @@ workflows:
           type: approval
           filters:
             branches:
-              only: master
+              only: main
       - docker-publish:
           requires:
             - approve
           filters:
             branches:
-              only: master
+              only: main
       - deploy:
           requires:
             - approve
             - docker-publish
           filters:
             branches:
-              only: master
+              only: main
