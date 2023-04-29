@@ -12,6 +12,9 @@ dotenv.config();
 process.env.HOST = process.env.HOST || 'http://localhost';
 process.env.PORT = process.env.PORT || '3000';
 
+const PORT = parseInt(process.env.PORT);
+const HOST = process.env.HOST.toString();
+
 const main = async () => {
   const app = express();
   const discord = new Discord();
@@ -19,8 +22,10 @@ const main = async () => {
 
   manager.addPlatform(new Twitch());
 
-  app.listen(process.env.PORT, () => {
-    logger.info(`express started listening to  ${process.env.HOST}:${process.env.PORT}`);
+  app.get('/', (req, res) => res.send('ok'));
+
+  app.listen(PORT, HOST, () => {
+    logger.info(`express started listening to  ${HOST}:${PORT}`);
   });
 };
 

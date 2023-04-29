@@ -2,7 +2,7 @@ import fsSync from 'fs';
 import fs from 'fs/promises';
 import path from 'node:path';
 
-const filepath = path.join(__dirname, '..', '..', 'db.json');
+const filepath = path.join(__dirname, '..', '..', 'data', 'db.json');
 
 export interface Database {
   set: (callback: (data: Record<string, string>) => Record<string, string>) => Promise<void>;
@@ -10,6 +10,9 @@ export interface Database {
 }
 
 if (!fsSync.existsSync(filepath)) {
+  const dirpath = path.dirname(filepath);
+
+  fs.mkdir(dirpath, { recursive: true });
   fs.writeFile(filepath, '{}', 'utf-8');
 }
 

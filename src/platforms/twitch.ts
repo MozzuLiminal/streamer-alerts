@@ -49,6 +49,8 @@ export class Twitch implements Platform {
   }
 
   registerWebhooks(app: Express) {
+    logger.info('Registered /twitch webhook');
+
     app.get('/twitch', (req, res) => {
       if (req.query.state !== state) {
         return res.sendStatus(401);
@@ -87,6 +89,8 @@ export class Twitch implements Platform {
     endpoint.searchParams.append('client_secret', this.secret);
     endpoint.searchParams.append('grant_type', 'refresh_token');
     endpoint.searchParams.append('refresh_token', refreshToken);
+
+    logger.info('POST https://id.twitch.tv/oauth2/token');
 
     return fetch(endpoint, {
       method: 'POST',
@@ -150,6 +154,8 @@ export class Twitch implements Platform {
 
     endpoint.searchParams.append('login', name);
 
+    logger.info('GET https://api.twitch.tv/helix/users');
+
     return fetch(endpoint, {
       headers: {
         'Content-Type': 'application/json',
@@ -165,6 +171,8 @@ export class Twitch implements Platform {
     const endpoint = new URL('https://api.twitch.tv/helix/eventsub/subscriptions');
 
     endpoint.searchParams.append('id', id);
+
+    logger.info('DELETE https://api.twitch.tv/helix/eventsub/subscriptions');
 
     return fetch(endpoint, {
       method: 'DELETE',
@@ -184,6 +192,8 @@ export class Twitch implements Platform {
   private async getTwitchSubscriptions(): Promise<Subscription[]> {
     const endpoint = new URL('https://api.twitch.tv/helix/eventsub/subscriptions');
 
+    logger.info('GET https://api.twitch.tv/helix/eventsub/subscriptions');
+
     return fetch(endpoint, {
       headers: {
         'Content-Type': 'application/json',
@@ -193,14 +203,14 @@ export class Twitch implements Platform {
     })
       .then((response) => {
         if (!response.ok) {
-          response.text().then((text) => {
+          return response.text().then((text) => {
             logger.error(`fetch subscriptions failed with response: (${response.status}) ${text}`);
           });
         }
 
         return response.json();
       })
-      .then((response) => response.data ?? []);
+      .then((response) => response?.data ?? []);
   }
 
   private userHasSubscription(subscriptions: any[], userId: string, event: string) {
@@ -224,6 +234,8 @@ export class Twitch implements Platform {
       logger.info(`user ${username} already has subscription ${event}, ignoring...`);
       return false;
     }
+
+    logger.info('POST https://api.twitch.tv/helix/eventsub/subscriptions');
 
     await fetch(endpoint, {
       method: 'POST',
@@ -307,6 +319,8 @@ export class Twitch implements Platform {
 
   private websocket() {
     return new Promise<void>((resolve) => {
+      logger.info('WSS wss://eventsub-beta.wss.twitch.tv/ws');
+
       const socket = new WebSocket('wss://eventsub-beta.wss.twitch.tv/ws');
 
       socket.on('message', (message) => {

@@ -1,0 +1,92 @@
+version: 2.1
+
+jobs:
+  build:
+    docker:
+      - image: cimg/node:18.16.0
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "package.json" }}
+            - v1-dependencies- # fallback to using the latest cache if no exact match is found
+      - run: npm ci
+      - run: npm run build
+      - save_cache:
+          paths:
+            - node_modules
+
+          key: v1-dependencies-{{ checksum "package.json" }}
+      - persist_to_workspace:
+          root: .
+          paths:
+            - dist
+
+  docker-publish:
+    docker:
+      - image: cimg/base:2023.04
+    steps:
+      - setup_remote_docker
+      - run: docker --version
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: Docker login
+          command: |
+            echo "$DOCKERHUB_PASS" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+      - run:
+          name: Build docker image
+          command: |
+            docker build -t $DOCKERHUB_USERNAME/$DOCKER_IMAGE_NAME .
+            docker push $DOCKERHUB_USERNAME/$DOCKER_IMAGE_NAME --all-tags
+
+  deploy:
+    docker:
+      - image: cimg/base:2023.04
+    steps:
+      - run:
+          name: Pull latest images and restart
+          command: |
+            ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST -p $SSH_PORT "
+              if [ ! -d "streamer-alerts" ]; then
+                ssh-keygen -F github.com || ssh-keyscan github.com >>~/.ssh/known_hosts
+                git clone https://github.com/MozzuLiminal/streamer-alerts.git
+              fi
+              cd streamer-alerts
+              git fetch --all
+              git reset --hard origin/master
+              docker-compose pull
+              docker-compose down
+              docker-compose up -d
+              sleep 5
+              if [ ! -n "$(docker ps -f "name=streamer-alerts" -f "status=running" -q)" ]; then
+                exit 1
+              fi
+            "
+
+workflows:
+  version: 2
+  build-publish-deploy:
+    jobs:
+      - build
+      - approve:
+          requires:
+            - build
+          type: approval
+          filters:
+            branches:
+              only: master
+      - docker-publish:
+          requires:
+            - approve
+          filters:
+            branches:
+              only: master
+      - deploy:
+          requires:
+            - approve
+            - docker-publish
+          filters:
+            branches:
+              only: master

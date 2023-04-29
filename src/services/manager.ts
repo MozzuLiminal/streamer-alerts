@@ -100,8 +100,8 @@ export class Manager {
       return { ...acc, [token]: process.env[token] };
     }, {});
 
-    await platform.init(tokens);
     await platform.registerWebhooks(this.webhooks);
+    await platform.init(tokens);
 
     logger.info(`initialized the ${platform.name} platform`);
 
