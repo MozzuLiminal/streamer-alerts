@@ -41,7 +41,7 @@ export type DiscordEvents = TypedEventEmitter<{
 export class Discord {
   private client: Client;
   private rest: REST;
-  private DISCORD_TOKEN: string;
+  private DISCORD_CHANNEL: string;
   private DISCORD_APP_ID: string;
   private GUILD_ID = '';
   private channel?: TextChannel;
@@ -50,11 +50,11 @@ export class Discord {
   events = new EventEmitter() as DiscordEvents;
 
   constructor() {
-    const { DISCORD_TOKEN, DISCORD_APP_ID, DISCORD_GUILD_ID } = this.loadTokens();
+    const { DISCORD_TOKEN, DISCORD_APP_ID, DISCORD_GUILD_ID, DISCORD_CHANNEL } = this.loadTokens();
 
-    this.DISCORD_TOKEN = DISCORD_TOKEN;
     this.DISCORD_APP_ID = DISCORD_APP_ID;
     this.GUILD_ID = DISCORD_GUILD_ID;
+    this.DISCORD_CHANNEL = DISCORD_CHANNEL;
 
     this.client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
     this.rest = new REST({ version: '10' });
@@ -63,7 +63,7 @@ export class Discord {
     this.rest.setToken(DISCORD_TOKEN);
 
     this.client.once(Events.ClientReady, () => {
-      this.channel = this.client.channels.cache.get('1095076086494269636') as TextChannel;
+      this.channel = this.client.channels.cache.get(this.DISCORD_CHANNEL) as TextChannel;
     });
   }
 
@@ -82,7 +82,7 @@ export class Discord {
   }
 
   private loadTokens() {
-    const tokensToLoad = ['DISCORD_TOKEN', 'DISCORD_APP_ID', 'DISCORD_GUILD_ID'] as const;
+    const tokensToLoad = ['DISCORD_TOKEN', 'DISCORD_APP_ID', 'DISCORD_GUILD_ID', 'DISCORD_CHANNEL'] as const;
 
     type Tokens = {
       [key in (typeof tokensToLoad)[number]]: string;
