@@ -25,3 +25,7 @@ The applications creates a `db.json` file store in the root of the repository. T
 ## Twitch
 
 You need to authenticate yourself to be able to listen to the twitch events. Once you start the application you will be prompted in the console or logs to authenticate. This application utilizes the websocket api which requires a client authentication instead of the normal application authentication.
+
+## Docker Hub
+
+The image can be found [here](https://hub.docker.com/repository/docker/mozzuliminal/streamer-alerts/general) on docker hub
