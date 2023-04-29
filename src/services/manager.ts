@@ -33,10 +33,10 @@ export class Manager {
     this.discord.events.on('add', (platformName, name, cb) => {
       const platform = this.platforms.find((platform) => platform.name === platformName);
 
-      if (!platform) return cb(false);
-      if (!platform.isStreamerSubscribed(name)) return cb(true);
+      if (!platform) return cb('FAILED');
+      if (!platform.isStreamerSubscribed(name)) return cb('ADDED');
 
-      return platform.addStreamerAlert(name).then(({ result }) => result !== 'FAILED');
+      return platform.addStreamerAlert(name).then(({ result }) => cb(result));
     });
 
     this.discord.events.on('users', async (callback) => {

@@ -12,6 +12,7 @@ import {
 } from 'discord.js';
 import { EventEmitter } from 'events';
 import TypedEventEmitter from 'typed-emitter';
+import { Platform } from '../interfaces/platform';
 import { createLogger } from './log';
 
 const logger = createLogger('discord');
@@ -28,10 +29,12 @@ interface Command {
   action: (interaction: ChatInputCommandInteraction<CacheType>) => any;
 }
 
+type SubscriptionResult = Awaited<ReturnType<Platform['addStreamerAlert']>>['result'];
+
 export type DiscordEvents = TypedEventEmitter<{
   online: (name: string, platform: string, url: string) => void;
   remove: (platformName: string, user: string, callback: (removedFrom: string[]) => void) => void;
-  add: (platformName: string, user: string, callback: (result: boolean) => void) => void;
+  add: (platformName: string, user: string, callback: (result: SubscriptionResult) => void) => void;
   users: (callback: (usersInPlatforms: Record<string, string[]>) => void) => void;
 }>;
 
@@ -130,9 +133,15 @@ export class Discord {
             return interaction.reply({ content: 'platform or streamer is missing', ephemeral: true });
           }
 
-          this.events.emit('add', platform, streamer, (success) => {
+          this.events.emit('add', platform, streamer, (result) => {
+            const messages: Record<SubscriptionResult, string> = {
+              ADDED: `Added alerts for ${streamer} on ${platform} successfully`,
+              EXISTS: `Alerts for ${streamer} on ${platform} already exists`,
+              FAILED: `Failed to add alerts for ${streamer} on ${platform}`,
+            };
+
             interaction.reply({
-              content: `Added alerts for ${streamer} on ${platform} ${success ? 'successfully' : 'unsuccessfully'}`,
+              content: messages[result],
               ephemeral: true,
             });
           });
