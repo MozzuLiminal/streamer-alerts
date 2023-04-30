@@ -17,9 +17,15 @@ import {
 import { EventEmitter } from 'events';
 import TypedEventEmitter from 'typed-emitter';
 import { Platform } from '../interfaces/platform';
+import db from '../services/db';
 import { createLogger } from './log';
 
 const logger = createLogger('discord');
+
+enum DatabaseKeys {
+  GUILD_CHANNELS = 'GUILD_CHANNELS',
+  GUILD_SUBSCRIPTIONS = 'GUILD_SUBSCRIPTIONS',
+}
 
 enum Commands {
   ALERT = 'alert',
@@ -43,22 +49,23 @@ export type DiscordEvents = TypedEventEmitter<{
   users: (callback: (usersInPlatforms: Record<string, string[]>) => void) => void;
 }>;
 
+const _GUILD_CHANNELS_DB: any = db.getSync()?.[DatabaseKeys.GUILD_CHANNELS] ?? [];
+const _GUILD_SUBSCRIPTIONS_DB: any = db.getSync()?.[DatabaseKeys.GUILD_SUBSCRIPTIONS] ?? [];
+
 export class Discord {
   private client: Client;
   private rest: REST;
   private DISCORD_APP_ID: string;
-  private GUILD_ID = '';
-  private channel: Map<string, TextChannel> = new Map();
   private platforms: string[] = [];
+  private channel: Map<string, TextChannel> = new Map();
   private commands: Map<string, Awaited<ReturnType<typeof this.createSlashCommands>>> = new Map();
-  private guildSubscriptions: Map<string, { streamer: string; platform: string }[]> = new Map();
+  private guildSubscriptions: Map<string, { streamer: string; platform: string }[]> = new Map(_GUILD_SUBSCRIPTIONS_DB);
   events = new EventEmitter() as DiscordEvents;
 
   constructor() {
-    const { DISCORD_TOKEN, DISCORD_APP_ID, DISCORD_GUILD_ID } = this.loadTokens();
+    const { DISCORD_TOKEN, DISCORD_APP_ID } = this.loadTokens();
 
     this.DISCORD_APP_ID = DISCORD_APP_ID;
-    this.GUILD_ID = DISCORD_GUILD_ID;
 
     this.client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
     this.rest = new REST({ version: '10' });
@@ -112,7 +119,7 @@ export class Discord {
   }
 
   private loadTokens() {
-    const tokensToLoad = ['DISCORD_TOKEN', 'DISCORD_APP_ID', 'DISCORD_GUILD_ID', 'DISCORD_CHANNEL'] as const;
+    const tokensToLoad = ['DISCORD_TOKEN', 'DISCORD_APP_ID'] as const;
 
     type Tokens = {
       [key in (typeof tokensToLoad)[number]]: string;
@@ -192,6 +199,17 @@ export class Discord {
               content,
               ephemeral: true,
             });
+
+            const seralized: Record<string, any> = {};
+
+            this.guildSubscriptions.forEach((value, key) => {
+              seralized[key] = value;
+            });
+
+            db.set((data) => ({
+              ...data,
+              [DatabaseKeys.GUILD_SUBSCRIPTIONS]: Object.entries(seralized),
+            }));
           });
         },
       },
@@ -291,6 +309,14 @@ export class Discord {
 
           this.channel.set(interaction.guildId as string, channel);
 
+          const serialized: Record<string, string> = {};
+
+          this.channel.forEach((channel, guildId) => {
+            serialized[guildId] = channel.id;
+          });
+
+          db.set((data) => ({ ...data, [DatabaseKeys.GUILD_CHANNELS]: Object.entries(serialized) }));
+
           interaction.reply({ content: `Alerts will now be sent in the ${channel.name} channel`, ephemeral: true });
         },
       },
@@ -308,9 +334,19 @@ export class Discord {
         const guild = await this.client.guilds.fetch(id);
         const commands = await this.createSlashCommands(guild);
 
-        await this.rest.put(Routes.applicationGuildCommands(this.DISCORD_APP_ID, this.GUILD_ID), {
-          body: commands.map(({ command }) => command.toJSON()),
+        _GUILD_CHANNELS_DB.forEach(([guildId, channelId]: any) => {
+          guild.channels.fetch(channelId).then((channel) => {
+            this.channel.set(guildId, channel as TextChannel);
+          });
         });
+
+        await this.rest
+          .put(Routes.applicationGuildCommands(this.DISCORD_APP_ID, id), {
+            body: commands.map(({ command }) => command.toJSON()),
+          })
+          .catch((err) => {
+            logger.error(`Register slash command failed for ${id}. ${err?.toString()}`);
+          });
 
         this.commands.set(id, commands);
 

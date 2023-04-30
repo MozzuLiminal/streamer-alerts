@@ -5,7 +5,7 @@ import path from 'node:path';
 const filepath = path.join(__dirname, '..', '..', 'data', 'db.json');
 
 export interface Database {
-  set: (callback: (data: Record<string, string>) => Record<string, string>) => Promise<void>;
+  set: (callback: (data: Record<string, any>) => Record<string, any>) => Promise<void>;
   get: () => Promise<Record<string, any>>;
 }
 
@@ -21,12 +21,14 @@ export const set: Database['set'] = async (callback) => {
 
   const newData = callback(existingData);
 
-  fs.writeFile(filepath, JSON.stringify(newData, null, 4), 'utf-8');
+  fs.writeFile(filepath, JSON.stringify(newData, null, 2), 'utf-8');
 };
 
 export const get: Database['get'] = async () => JSON.parse(await fs.readFile(filepath, 'utf-8'));
+export const getSync = () => JSON.parse(fsSync.readFileSync(filepath, 'utf-8'));
 
 export default {
   set,
   get,
+  getSync,
 };
