@@ -65,6 +65,12 @@ export class Discord {
     this.client.once(Events.ClientReady, () => {
       this.channel = this.client.channels.cache.get(this.DISCORD_CHANNEL) as TextChannel;
     });
+
+    this.client.on(Events.GuildCreate, (guild) => {
+      logger.info(`Discord has joined the server ${guild.name}`);
+
+      if (this.commands) guild.commands.set(this.commands.map(({ command }) => command));
+    });
   }
 
   private attachEvents() {
@@ -135,7 +141,7 @@ export class Discord {
 
           this.events.emit('add', platform, streamer, (result) => {
             const messages: Record<SubscriptionResult, string> = {
-              ADDED: `Added alerts for ${streamer} on ${platform} successfully`,
+              ADDED: `Added alerts for ${streamer} on ${platform}`,
               EXISTS: `Alerts for ${streamer} on ${platform} already exists`,
               FAILED: `Failed to add alerts for ${streamer} on ${platform}`,
             };
