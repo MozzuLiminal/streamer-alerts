@@ -12,8 +12,8 @@ export interface Database {
 if (!fsSync.existsSync(filepath)) {
   const dirpath = path.dirname(filepath);
 
-  fs.mkdir(dirpath, { recursive: true });
-  fs.writeFile(filepath, '{}', 'utf-8');
+  fsSync.mkdirSync(dirpath, { recursive: true });
+  fsSync.writeFileSync(filepath, '{}', 'utf-8');
 }
 
 export const set: Database['set'] = async (callback) => {
@@ -25,7 +25,7 @@ export const set: Database['set'] = async (callback) => {
 };
 
 export const get: Database['get'] = async () => JSON.parse(await fs.readFile(filepath, 'utf-8'));
-export const getSync = () => JSON.parse(fsSync.readFileSync(filepath, 'utf-8'));
+export const getSync = () => JSON.parse(fsSync.readFileSync(filepath, 'utf-8') ?? '{}');
 
 export default {
   set,

@@ -1,5 +1,6 @@
 import { Express } from 'express';
 import { Platform } from '../interfaces/platform';
+import db from './db';
 import { Discord } from './discord';
 import { createLogger } from './log';
 
@@ -17,26 +18,28 @@ export class Manager {
     this.discord = discord;
     this.webhooks = webhooks;
 
-    this.discord.events.on('remove', async (platformName, name, cb) => {
+    this.discord.init(db.getSync()['Discord']);
+
+    this.discord.events.on('remove', async (platformName, name, guildId, cb) => {
       if (platformName === 'all') {
         const allPlatforms = await Promise.all(
-          this.platforms.map((platform) => this.handleRemoveStreamer(platform.name, name)),
+          this.platforms.map((platform) => this.handleRemoveStreamer(platform.name, name, guildId)),
         );
         const unqiuePlatforms = Array.from(new Set(...allPlatforms.flat(2)));
 
         return cb(unqiuePlatforms);
       }
 
-      return this.handleRemoveStreamer(platformName, name).then(cb);
+      return this.handleRemoveStreamer(platformName, name, guildId).then(cb);
     });
 
-    this.discord.events.on('add', (platformName, name, cb) => {
+    this.discord.events.on('add', (platformName, name, guildid, cb) => {
       const platform = this.platforms.find((platform) => platform.name === platformName);
 
       if (!platform) return cb('FAILED');
-      if (!platform.isStreamerSubscribed(name)) return cb('ADDED');
+      if (!platform.isStreamerSubscribed(name, guildid)) return cb('ADDED');
 
-      return platform.addStreamerAlert(name).then(({ result }) => cb(result));
+      return platform.addStreamerAlert(name, guildid).then(({ result }) => cb(result));
     });
 
     this.discord.events.on('users', async (callback) => {
@@ -58,22 +61,26 @@ export class Manager {
 
       callback(platformsOfuser);
     });
+
+    this.discord.events.on('serialize', () => {
+      db.set((data) => ({ ...data, Discord: this.discord.serialize() }));
+    });
   }
 
-  private async handleRemoveStreamer(platformName: string, name: string) {
+  private async handleRemoveStreamer(platformName: string, name: string, guildId: string) {
     if (platformName === 'all') {
-      const platforms = this.platforms.filter((platform) => platform.isStreamerSubscribed(name));
+      const platforms = this.platforms.filter((platform) => platform.isStreamerSubscribed(name, guildId));
 
-      await Promise.all(platforms.map((platform) => platform.removeStreamerAlert(name)));
+      await Promise.all(platforms.map((platform) => platform.removeStreamerAlert(name, guildId)));
 
       return this.platforms.map((platform) => platform.name);
     }
 
     const platform = this.platforms.find((platform) => platform.name === platformName);
 
-    if (!platform || !platform.isStreamerSubscribed(name)) return Promise.resolve([]);
+    if (!platform || !platform.isStreamerSubscribed(name, guildId)) return Promise.resolve([]);
 
-    await platform.removeStreamerAlert(name);
+    await platform.removeStreamerAlert(name, guildId);
 
     return [platform.name];
   }
@@ -100,8 +107,14 @@ export class Manager {
       return { ...acc, [token]: process.env[token] };
     }, {});
 
+    const serialized = db.getSync()?.[platform.name] ?? {};
+
+    platform.events.on('serialize', () => {
+      db.set((data) => ({ ...data, [platform.name]: platform.serialize() }));
+    });
+
     await platform.registerWebhooks(this.webhooks);
-    await platform.init(tokens);
+    await platform.init(tokens, serialized);
 
     logger.info(`initialized the ${platform.name} platform`);
 

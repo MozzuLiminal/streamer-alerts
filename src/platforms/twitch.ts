@@ -4,7 +4,6 @@ import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 import { Platform, PlatformEvents } from '../interfaces/platform';
 import { Subscription } from '../interfaces/twitch';
-import db from '../services/db';
 import { createLogger } from '../services/log';
 
 const logger = createLogger('twitch');
@@ -13,6 +12,7 @@ enum DatabaseKeys {
   USER_ACCESS_TOKEN = 'USER_ACCESS_TOKEN',
   USER_ACCESS_TOKEN_EXPIRE = 'USER_ACCESS_TOKEN_EXPIRE',
   USER_ACCESS_REFRESH_TOKEN = 'USER_ACCESS_REFRESH_TOKEN',
+  GUILD_SUBSCRIPTIONS = 'GUILD_SUBSCRIPTIONS',
 }
 
 enum Tokens {
@@ -38,10 +38,12 @@ export class Twitch implements Platform {
   private user_access_token = '';
   private twitchEvents = new EventEmitter();
   private user_access_refresh_token = '';
+  private user_access_expire = '';
   private socket_session_id = '';
   private socket?: WebSocket;
   private idToUsername: Record<string, string> = {};
   private HOST = process.env.HOST || 'http://localhost';
+  private subscriptionsByGuildId = new Map<string, string[]>();
 
   constructor() {
     this.name = 'Twitch';
@@ -104,21 +106,14 @@ export class Twitch implements Platform {
 
         this.createRefreshTimeout(refreshDiff);
 
-        db.set((data) => ({
-          ...data,
-          [DatabaseKeys.USER_ACCESS_REFRESH_TOKEN]: this.user_access_refresh_token,
-          [DatabaseKeys.USER_ACCESS_TOKEN]: this.user_access_token,
-          [DatabaseKeys.USER_ACCESS_TOKEN_EXPIRE]: dayjs().add(response.expires_in, 'seconds').toISOString(),
-        }));
+        this.events.emit('serialize');
       });
   }
 
   private async parseAndManageTokens() {
-    const database = (await db?.get()) ?? {};
-
-    const refresh_token = database[DatabaseKeys.USER_ACCESS_REFRESH_TOKEN];
-    const access_token = database[DatabaseKeys.USER_ACCESS_TOKEN];
-    const expire = database[DatabaseKeys.USER_ACCESS_TOKEN_EXPIRE];
+    const refresh_token = this.user_access_refresh_token;
+    const access_token = this.user_access_token;
+    const expire = this.user_access_expire;
 
     const refreshDiff = expire ? dayjs(expire).diff(dayjs(), 'seconds') : null;
 
@@ -133,10 +128,16 @@ export class Twitch implements Platform {
     }
   }
 
-  async init(tokens: Record<string, string | undefined>) {
+  async init(tokens: Record<string, string | undefined>, serialized: Record<string, any>) {
     if (!tokens[Tokens.CLIENT_ID] || !tokens[Tokens.SECRET]) {
       return void logger.error(`missing the ${Tokens.CLIENT_ID} or the ${Tokens.SECRET} token in the env`);
     }
+
+    this.user_access_expire = serialized[DatabaseKeys.USER_ACCESS_TOKEN_EXPIRE];
+    this.user_access_token = serialized[DatabaseKeys.USER_ACCESS_TOKEN];
+    this.user_access_refresh_token = serialized[DatabaseKeys.USER_ACCESS_REFRESH_TOKEN];
+
+    this.subscriptionsByGuildId = new Map(serialized[DatabaseKeys.GUILD_SUBSCRIPTIONS]);
 
     this.client_id = tokens[Tokens.CLIENT_ID];
     this.secret = tokens[Tokens.SECRET];
@@ -213,13 +214,26 @@ export class Twitch implements Platform {
       .then((response) => response?.data ?? []);
   }
 
-  private userHasSubscription(subscriptions: any[], userId: string, event: string) {
+  private userHasSubscription(subscriptions: Subscription[], userId: string, event: string) {
     return subscriptions.some((subscription) => {
       return subscription.type === event && subscription.condition.broadcaster_user_id === userId;
     });
   }
 
-  private async subscribe(username: string, event: string): ReturnType<Platform['addStreamerAlert']> {
+  private userHasGuildSubscription(
+    subscriptions: Subscription[],
+    guildSubscriptions: string[],
+    userId: string,
+    event: string,
+  ) {
+    return subscriptions.some((subscription) => {
+      if (subscription.type === event && subscription.condition.broadcaster_user_id === userId) {
+        return guildSubscriptions.includes(subscription.id);
+      }
+    });
+  }
+
+  private async subscribe(username: string, event: string, guildId: string): ReturnType<Platform['addStreamerAlert']> {
     const userId = await this.getUserId(username);
     const subscriptions = await this.getTwitchSubscriptions();
     const endpoint = new URL('https://api.twitch.tv/helix/eventsub/subscriptions');
@@ -232,7 +246,12 @@ export class Twitch implements Platform {
       await this.websocket();
     }
 
-    if (this.userHasSubscription(subscriptions, userId, event)) {
+    const subscriptionsByGuild = this.subscriptionsByGuildId.get(guildId) ?? [];
+
+    // TODO we get {"error":"Conflict","status":409,"message":"subscription already exists"} if we subscribe to the same person on two different servers.
+    // Need to catch this and relay the event to all servers who subscribe to the same person
+
+    if (this.userHasGuildSubscription(subscriptions, subscriptionsByGuild, userId, event)) {
       logger.info(`user ${username} already has subscription ${event}, ignoring...`);
       return { result: 'EXISTS' };
     }
@@ -261,18 +280,23 @@ export class Twitch implements Platform {
 
           returnStatus.result = 'FAILED';
         }
+        return response.json();
+      })
+      .then((body) => {
+        const existing = this.subscriptionsByGuildId.get(guildId) ?? [];
+
+        this.subscriptionsByGuildId.set(guildId, [...existing, body.data[0].id]);
+        this.events.emit('serialize');
+
+        console.log('we did create the subscription', username, event);
       })
       .catch(() => {
         returnStatus.result = 'FAILED';
       });
 
-    logger.info(`added ${event} event subscription for the user ${userId}`);
+    logger.info(`added ${event} event subscription for the user ${username} - ${userId}`);
 
     return returnStatus;
-  }
-
-  public addStreamer(name: string) {
-    this.subscribe(name, 'stream.online');
   }
 
   private oauthClient() {
@@ -311,13 +335,9 @@ export class Twitch implements Platform {
           .then((response) => {
             this.user_access_token = response.access_token;
             this.user_access_refresh_token = response.refresh_token;
+            this.user_access_expire = dayjs().add(response.expires_in, 'seconds').toISOString();
 
-            db.set((data) => ({
-              ...data,
-              [DatabaseKeys.USER_ACCESS_TOKEN]: this.user_access_token,
-              [DatabaseKeys.USER_ACCESS_REFRESH_TOKEN]: this.user_access_refresh_token,
-              [DatabaseKeys.USER_ACCESS_TOKEN_EXPIRE]: dayjs().add(response.expires_in, 'seconds').toISOString(),
-            }));
+            this.events.emit('serialize');
 
             resolve();
           });
@@ -383,25 +403,65 @@ export class Twitch implements Platform {
       .filter(Boolean);
   }
 
-  addStreamerAlert(name: string) {
-    return this.subscribe(name, 'stream.online');
+  addStreamerAlert(name: string, guildId: string) {
+    return this.subscribe(name, 'stream.online', guildId);
   }
 
-  async removeStreamerAlert(name: string) {
+  async removeStreamerAlert(name: string, guildId: string) {
     const subscriptions = await this.getTwitchSubscriptions();
+
+    const existing = this.subscriptionsByGuildId.get(guildId) ?? [];
+
+    // this.subscriptionsByGuildId.set(guildId, [...existing, body.data[0].id]);
+    // this.events.emit('serialize');
 
     const match = subscriptions.find((subscription) => {
       return this.idToUsername[subscription.condition.broadcaster_user_id] === name;
     });
 
-    if (match) await this.deleteSubscription(match.id);
+    if (match) {
+      const isGuildSub = this.userHasGuildSubscription(
+        subscriptions,
+        existing,
+        match.condition.broadcaster_user_id,
+        'stream.online',
+      );
 
-    logger.info(`removing ${match?.type} event subscription for the user ${name}`);
+      if (isGuildSub) {
+        logger.info(`removing ${match?.type} event subscription for the user ${name}`);
+
+        await this.deleteSubscription(match.id);
+
+        return true;
+      } else {
+        logger.info(`found matching subscription for the user ${name}, but it belongs in a different server`);
+      }
+
+      return false;
+    }
 
     return true;
   }
 
-  async isStreamerSubscribed(name: string) {
+  serialize() {
+    const serialized: Record<string, any> = {};
+
+    serialized[DatabaseKeys.USER_ACCESS_REFRESH_TOKEN] = this.user_access_refresh_token;
+    serialized[DatabaseKeys.USER_ACCESS_TOKEN] = this.user_access_token;
+    serialized[DatabaseKeys.USER_ACCESS_TOKEN_EXPIRE] = this.user_access_expire;
+
+    const subscriptions: Record<string, string[]> = {};
+
+    this.subscriptionsByGuildId.forEach((value, key) => {
+      subscriptions[key] = value;
+    });
+
+    serialized[DatabaseKeys.GUILD_SUBSCRIPTIONS] = Object.entries(subscriptions);
+
+    return serialized;
+  }
+
+  async isStreamerSubscribed(name: string, guilId: string) {
     return (await this.getSubscriptions()).includes(name);
   }
 

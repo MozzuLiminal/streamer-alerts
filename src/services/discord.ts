@@ -8,6 +8,7 @@ import {
   Events,
   GatewayIntentBits,
   Guild,
+  Interaction,
   NonThreadGuildBasedChannel,
   REST,
   Routes,
@@ -44,9 +45,10 @@ type SubscriptionResult = Awaited<ReturnType<Platform['addStreamerAlert']>>['res
 
 export type DiscordEvents = TypedEventEmitter<{
   online: (name: string, platform: string, url: string) => void;
-  remove: (platformName: string, user: string, callback: (removedFrom: string[]) => void) => void;
-  add: (platformName: string, user: string, callback: (result: SubscriptionResult) => void) => void;
+  remove: (platformName: string, user: string, guildId: string, callback: (removedFrom: string[]) => void) => void;
+  add: (platformName: string, user: string, guildId: string, callback: (result: SubscriptionResult) => void) => void;
   users: (callback: (usersInPlatforms: Record<string, string[]>) => void) => void;
+  serialize: () => void;
 }>;
 
 const _GUILD_CHANNELS_DB: any = db.getSync()?.[DatabaseKeys.GUILD_CHANNELS] ?? [];
@@ -94,13 +96,27 @@ export class Discord {
     this.client.on(Events.ChannelCreate, handleChannelChange);
     this.client.on(Events.ChannelDelete, handleChannelChange);
     this.client.on(Events.ChannelUpdate, handleChannelChange);
+
+    this.client.on(Events.InteractionCreate, this.notReadyReply);
   }
+
+  private notReadyReply = (interaction: Interaction<CacheType>) => {
+    if (!interaction.isChatInputCommand()) return;
+
+    interaction.reply({ content: 'The bot is still setting things up, try again later', ephemeral: true });
+  };
 
   private attachEvents() {
     this.client.on(Events.InteractionCreate, async (interaction) => {
-      const commands = await this.commands.get(interaction.guildId as string);
+      if (!interaction.isChatInputCommand()) return;
 
-      if (!interaction.isChatInputCommand() || !commands) return;
+      const commands = this.commands.get(interaction.guildId as string);
+
+      if (!commands) {
+        logger.info(`received slash command ${(interaction as any)?.commandName}, but found no command handler`);
+
+        return;
+      }
 
       logger.info(`user ${interaction.user.username} used the slash command /${interaction.commandName}`);
 
@@ -116,6 +132,25 @@ export class Discord {
         });
       });
     });
+
+    this.client.off(Events.InteractionCreate, this.notReadyReply);
+  }
+
+  async init(serialized?: Record<string, any>) {
+    if (!serialized) return;
+
+    this.guildSubscriptions = new Map(serialized?.[DatabaseKeys.GUILD_SUBSCRIPTIONS] ?? []);
+
+    const channelEntries = await Promise.all(
+      (serialized?.[DatabaseKeys.GUILD_CHANNELS] ?? []).map(async ([guildId, channelId]: any) => {
+        const guild = await this.client.guilds.fetch(guildId);
+        const channel = await guild.channels.fetch(channelId);
+
+        return [guildId, channel];
+      }),
+    );
+
+    this.channel = new Map(channelEntries);
   }
 
   private loadTokens() {
@@ -177,7 +212,7 @@ export class Discord {
             return interaction.reply({ content: 'platform or streamer is missing', ephemeral: true });
           }
 
-          this.events.emit('add', platform, streamer, (result) => {
+          this.events.emit('add', platform, streamer, guildId, (result) => {
             const messages: Record<SubscriptionResult, string> = {
               ADDED: `Added alerts for ${streamer} on ${platform}`,
               EXISTS: `Alerts for ${streamer} on ${platform} already exists`,
@@ -200,16 +235,7 @@ export class Discord {
               ephemeral: true,
             });
 
-            const seralized: Record<string, any> = {};
-
-            this.guildSubscriptions.forEach((value, key) => {
-              seralized[key] = value;
-            });
-
-            db.set((data) => ({
-              ...data,
-              [DatabaseKeys.GUILD_SUBSCRIPTIONS]: Object.entries(seralized),
-            }));
+            this.events.emit('serialize');
           });
         },
       },
@@ -250,14 +276,19 @@ export class Discord {
             return interaction.reply({ content: 'platform or streamer is missing', ephemeral: true });
           }
 
-          this.guildSubscriptions.set(
-            guildId,
-            subscriptions.filter((sub) => {
-              return sub.platform === platform && sub.streamer === streamer;
-            }),
-          );
+          const remainingSubscriptions = subscriptions.filter((sub) => {
+            if (sub.platform === platform && sub.streamer === streamer) return false;
 
-          this.events.emit('remove', platform, streamer, () => {
+            return true;
+          });
+
+          if (remainingSubscriptions.length > 0) {
+            this.guildSubscriptions.set(guildId, remainingSubscriptions);
+          } else {
+            this.guildSubscriptions.delete(guildId);
+          }
+
+          this.events.emit('remove', platform, streamer, guildId, () => {
             const platformNames = this.platforms.join(', ');
 
             return interaction.reply({
@@ -265,6 +296,8 @@ export class Discord {
               ephemeral: true,
             });
           });
+
+          this.events.emit('serialize');
         },
       },
       {
@@ -309,15 +342,9 @@ export class Discord {
 
           this.channel.set(interaction.guildId as string, channel);
 
-          const serialized: Record<string, string> = {};
-
-          this.channel.forEach((channel, guildId) => {
-            serialized[guildId] = channel.id;
-          });
-
-          db.set((data) => ({ ...data, [DatabaseKeys.GUILD_CHANNELS]: Object.entries(serialized) }));
-
           interaction.reply({ content: `Alerts will now be sent in the ${channel.name} channel`, ephemeral: true });
+
+          this.events.emit('serialize');
         },
       },
     ];
@@ -327,19 +354,18 @@ export class Discord {
    * Registers the slash commands to the discord server. Should be called after adding platform instances
    */
   async registerSlashCommands() {
+    logger.info('Started registering slash commands');
+
     const guildIds = await this.client.guilds.fetch().then((guilds) => guilds.map((guild) => guild.id));
 
     const guildCommandsByName = await Promise.all(
       guildIds.map(async (id) => {
+        if (id === '1056950119016181790') return;
+
         const guild = await this.client.guilds.fetch(id);
         const commands = await this.createSlashCommands(guild);
 
-        _GUILD_CHANNELS_DB.forEach(([guildId, channelId]: any) => {
-          guild.channels.fetch(channelId).then((channel) => {
-            this.channel.set(guildId, channel as TextChannel);
-          });
-        });
-
+        logger.info(`attaching events to ${guild.name}, waiting for response...`);
         await this.rest
           .put(Routes.applicationGuildCommands(this.DISCORD_APP_ID, id), {
             body: commands.map(({ command }) => command.toJSON()),
@@ -350,19 +376,39 @@ export class Discord {
 
         this.commands.set(id, commands);
 
-        return [guild.name, commands] as const;
+        logger.info(
+          `attached the following slashcommands ${commands.map((command: any) => command.name).join(', ')} in the '${
+            guild.name
+          }' server`,
+        );
       }),
     );
 
-    guildCommandsByName.forEach(([name, commands]) => {
-      logger.info(
-        `attached the following slashcommands ${commands
-          .map((command) => command.name)
-          .join(', ')} in the '${name}' server`,
-      );
-    });
+    await Promise.all(guildCommandsByName);
 
     return this.attachEvents();
+  }
+
+  serialize() {
+    const serialized: Record<string, any> = {};
+
+    const channels: Record<string, string> = {};
+
+    this.channel.forEach((channel, guildId) => {
+      channels[guildId] = channel.id;
+    });
+
+    serialized[DatabaseKeys.GUILD_CHANNELS] = Object.entries(channels);
+
+    const guildSubscriptions: Record<string, any> = {};
+
+    this.guildSubscriptions.forEach((subscription, guildId) => {
+      guildSubscriptions[guildId] = subscription;
+    });
+
+    serialized[DatabaseKeys.GUILD_SUBSCRIPTIONS] = Object.entries(guildSubscriptions);
+
+    return serialized;
   }
 
   addPlatformChoice(name: string) {
