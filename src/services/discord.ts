@@ -1,10 +1,14 @@
 import {
   APIApplicationCommandOptionChoice,
   CacheType,
+  ChannelType,
   ChatInputCommandInteraction,
   Client,
+  DMChannel,
   Events,
   GatewayIntentBits,
+  Guild,
+  NonThreadGuildBasedChannel,
   REST,
   Routes,
   SlashCommandBuilder,
@@ -21,6 +25,7 @@ enum Commands {
   ALERT = 'alert',
   REMOVE = 'remove',
   DEBUG = 'debug',
+  JOIN = 'join',
 }
 
 interface Command {
@@ -41,20 +46,19 @@ export type DiscordEvents = TypedEventEmitter<{
 export class Discord {
   private client: Client;
   private rest: REST;
-  private DISCORD_CHANNEL: string;
   private DISCORD_APP_ID: string;
   private GUILD_ID = '';
-  private channel?: TextChannel;
+  private channel: Map<string, TextChannel> = new Map();
   private platforms: string[] = [];
-  private commands?: Command[];
+  private commands: Map<string, Awaited<ReturnType<typeof this.createSlashCommands>>> = new Map();
+  private guildSubscriptions: Map<string, { streamer: string; platform: string }[]> = new Map();
   events = new EventEmitter() as DiscordEvents;
 
   constructor() {
-    const { DISCORD_TOKEN, DISCORD_APP_ID, DISCORD_GUILD_ID, DISCORD_CHANNEL } = this.loadTokens();
+    const { DISCORD_TOKEN, DISCORD_APP_ID, DISCORD_GUILD_ID } = this.loadTokens();
 
     this.DISCORD_APP_ID = DISCORD_APP_ID;
     this.GUILD_ID = DISCORD_GUILD_ID;
-    this.DISCORD_CHANNEL = DISCORD_CHANNEL;
 
     this.client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
     this.rest = new REST({ version: '10' });
@@ -62,28 +66,48 @@ export class Discord {
     this.client.login(DISCORD_TOKEN);
     this.rest.setToken(DISCORD_TOKEN);
 
-    this.client.once(Events.ClientReady, () => {
-      this.channel = this.client.channels.cache.get(this.DISCORD_CHANNEL) as TextChannel;
-    });
-
-    this.client.on(Events.GuildCreate, (guild) => {
+    this.client.on(Events.GuildCreate, async (guild) => {
       logger.info(`Discord has joined the server ${guild.name}`);
 
-      if (this.commands) guild.commands.set(this.commands.map(({ command }) => command));
+      const commands = await this.createSlashCommands(guild);
+
+      if (this.commands) guild.commands.set(commands.map(({ command }) => command));
     });
+
+    const handleChannelChange = async (channel: NonThreadGuildBasedChannel | DMChannel) => {
+      if (!channel.isThread() && !channel.isDMBased()) {
+        logger.info(`Text channel was changed in ${channel.guild.name}, updating commands`);
+
+        const commands = await this.createSlashCommands(channel.guild);
+
+        if (this.commands) channel.guild.commands.set(commands.map(({ command }) => command));
+      }
+    };
+
+    this.client.on(Events.ChannelCreate, handleChannelChange);
+    this.client.on(Events.ChannelDelete, handleChannelChange);
+    this.client.on(Events.ChannelUpdate, handleChannelChange);
   }
 
   private attachEvents() {
-    this.client.on(Events.InteractionCreate, (interaction) => {
-      if (!interaction.isChatInputCommand()) return;
+    this.client.on(Events.InteractionCreate, async (interaction) => {
+      const commands = await this.commands.get(interaction.guildId as string);
+
+      if (!interaction.isChatInputCommand() || !commands) return;
 
       logger.info(`user ${interaction.user.username} used the slash command /${interaction.commandName}`);
 
-      this.commands?.find(({ name }) => interaction.commandName === name)?.action(interaction);
+      commands.find(({ name }) => interaction.commandName === name)?.action(interaction);
     });
 
     this.events.on('online', (name, platform, url) => {
-      this.channel?.send(`${name} is streaming live on ${platform} at ${url}`);
+      this.guildSubscriptions.forEach((subscriptions, guildId) => {
+        subscriptions.forEach((subscription) => {
+          if (subscription.platform === platform && subscription.streamer === name) {
+            this.channel?.get(guildId)?.send(`${name} is streaming live on ${platform} at ${url}`);
+          }
+        });
+      });
     });
   }
 
@@ -104,11 +128,14 @@ export class Discord {
     }, {} as Tokens);
   }
 
-  /**
-   * Registers the slash commands to the discord server. Should be called after adding platform instances
-   */
-  async registerSlashCommands() {
-    this.commands = [
+  private createSlashCommands = async (guild: Guild): Promise<Command[]> => {
+    const textChannels = await guild.channels.fetch().then((channels) => {
+      return channels
+        .filter((channel) => channel && channel.type === ChannelType.GuildText)
+        .map((channel) => ({ name: channel?.name as string, value: channel?.id as string }));
+    });
+
+    return [
       {
         name: Commands.ALERT,
         command: new SlashCommandBuilder()
@@ -130,6 +157,10 @@ export class Discord {
             option.setName('streamer').setDescription('the streamer that you want to add alerts for').setRequired(true),
           ),
         action: (interaction) => {
+          const guildId = interaction.guildId as string;
+          const subscriptions = this.guildSubscriptions.get(interaction.guildId as string) ?? [];
+          const channel = this.channel.get(guildId);
+
           const [platform, streamer] = [
             interaction.options.get('platform')?.value as string,
             interaction.options.get('streamer')?.value as string,
@@ -146,8 +177,19 @@ export class Discord {
               FAILED: `Failed to add alerts for ${streamer} on ${platform}`,
             };
 
+            let content = messages[result];
+
+            if (result === 'ADDED') {
+              this.guildSubscriptions.set(guildId, [...subscriptions, { streamer, platform }]);
+            }
+
+            if (!channel) {
+              content +=
+                '\n\n**You have not specified what channel i should send alerts in, use the _/join_ slash command to select one**';
+            }
+
             interaction.reply({
-              content: messages[result],
+              content,
               ephemeral: true,
             });
           });
@@ -178,6 +220,9 @@ export class Discord {
             option.setName('streamer').setDescription('the streamer that you want to add alerts for').setRequired(true),
           ),
         action: (interaction) => {
+          const guildId = interaction.guildId as string;
+          const subscriptions = this.guildSubscriptions.get(interaction.guildId as string) ?? [];
+
           const [platform, streamer] = [
             interaction.options.get('platform')?.value as string,
             interaction.options.get('streamer')?.value as string,
@@ -187,7 +232,14 @@ export class Discord {
             return interaction.reply({ content: 'platform or streamer is missing', ephemeral: true });
           }
 
-          this.events.emit('remove', platform, streamer, (success) => {
+          this.guildSubscriptions.set(
+            guildId,
+            subscriptions.filter((sub) => {
+              return sub.platform === platform && sub.streamer === streamer;
+            }),
+          );
+
+          this.events.emit('remove', platform, streamer, () => {
             const platformNames = this.platforms.join(', ');
 
             return interaction.reply({
@@ -216,13 +268,63 @@ export class Discord {
           });
         },
       },
+      {
+        name: Commands.JOIN,
+        command: new SlashCommandBuilder()
+          .setName(Commands.JOIN)
+          .setDescription('Joins a text channel to send alerts in')
+          .addStringOption((option) =>
+            option
+              .setName('channel')
+              .setDescription('The text channel')
+              .setRequired(true)
+              .addChoices(...textChannels),
+          ),
+        action: (interaction) => {
+          const channelId = interaction.options.get('channel')?.value as string;
+
+          if (!channelId) {
+            return interaction.reply({ content: 'The channel does not exist', ephemeral: true });
+          }
+
+          const channel = this.client.channels.cache.get(channelId) as TextChannel;
+
+          this.channel.set(interaction.guildId as string, channel);
+
+          interaction.reply({ content: `Alerts will now be sent in the ${channel.name} channel`, ephemeral: true });
+        },
+      },
     ];
+  };
 
-    await this.rest.put(Routes.applicationGuildCommands(this.DISCORD_APP_ID, this.GUILD_ID), {
-      body: this.commands.map(({ command }) => command.toJSON()),
+  /**
+   * Registers the slash commands to the discord server. Should be called after adding platform instances
+   */
+  async registerSlashCommands() {
+    const guildIds = await this.client.guilds.fetch().then((guilds) => guilds.map((guild) => guild.id));
+
+    const guildCommandsByName = await Promise.all(
+      guildIds.map(async (id) => {
+        const guild = await this.client.guilds.fetch(id);
+        const commands = await this.createSlashCommands(guild);
+
+        await this.rest.put(Routes.applicationGuildCommands(this.DISCORD_APP_ID, this.GUILD_ID), {
+          body: commands.map(({ command }) => command.toJSON()),
+        });
+
+        this.commands.set(id, commands);
+
+        return [guild.name, commands] as const;
+      }),
+    );
+
+    guildCommandsByName.forEach(([name, commands]) => {
+      logger.info(
+        `attached the following slashcommands ${commands
+          .map((command) => command.name)
+          .join(', ')} in the '${name}' server`,
+      );
     });
-
-    logger.info(`attached the following slashcommands ${this.commands.map((command) => command.name).join(', ')}`);
 
     return this.attachEvents();
   }

@@ -15,7 +15,6 @@ TWITCH_SECRET=<secret>
 TWITCH_CLIENT_ID=<client-id>
 DISCORD_TOKEN=<token>
 DISCORD_APP_ID=<app-id>
-DISCORD_GUILD_ID=<discord-server-id>
 ```
 
 ## Authentication and Storage
